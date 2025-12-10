@@ -87,7 +87,10 @@ def normalize_clientes(df: pd.DataFrame) -> pd.DataFrame:
         "%Y-%m-%d"
     )
 
-    return normalized[EXPECTED_COLUMNS]
+    ordered_columns = EXPECTED_COLUMNS + [
+        col for col in normalized.columns if col not in EXPECTED_COLUMNS
+    ]
+    return normalized[ordered_columns]
 
 
 def load_clientes() -> pd.DataFrame:
