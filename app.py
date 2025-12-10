@@ -17,6 +17,15 @@ from flask import (
 
 BASE_DIR = Path(__file__).parent
 DATA_PATH = BASE_DIR / "data" / "clientes.csv"
+EXPECTED_COLUMNS = [
+    "nome",
+    "email",
+    "telefone",
+    "empresa",
+    "status",
+    "ultima_interacao",
+    "valor_estm",
+]
 DEFAULT_USER = {
     "username": os.getenv("CRM_USER", "admin"),
     "password": os.getenv("CRM_PASSWORD", "admin"),
@@ -56,19 +65,45 @@ def ensure_data_file() -> None:
         sample.to_csv(DATA_PATH, index=False)
 
 
+def normalize_clientes(df: pd.DataFrame) -> pd.DataFrame:
+    """Garantir colunas e formatos esperados na planilha."""
+    normalized = df.copy()
+    for col in EXPECTED_COLUMNS:
+        if col not in normalized.columns:
+            normalized[col] = "" if col != "valor_estm" else 0
+
+    normalized["status"] = normalized["status"].fillna("Lead")
+
+    normalized["valor_estm"] = (
+        pd.to_numeric(normalized["valor_estm"], errors="coerce")
+        .fillna(0)
+        .astype(float)
+    )
+
+    normalized["ultima_interacao"] = pd.to_datetime(
+        normalized["ultima_interacao"], errors="coerce"
+    ).fillna(pd.Timestamp.today().normalize())
+    normalized["ultima_interacao"] = normalized["ultima_interacao"].dt.strftime(
+        "%Y-%m-%d"
+    )
+
+    return normalized[EXPECTED_COLUMNS]
+
+
 def load_clientes() -> pd.DataFrame:
     ensure_data_file()
-    return pd.read_csv(DATA_PATH)
+    df = pd.read_csv(DATA_PATH)
+    return normalize_clientes(df)
 
 
 def persist_clientes(df: pd.DataFrame) -> None:
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(DATA_PATH, index=False)
+    normalize_clientes(df).to_csv(DATA_PATH, index=False)
 
 
 def calculate_metrics(df: pd.DataFrame) -> Dict[str, int]:
     por_status = df["status"].value_counts().to_dict()
-    faturamento_estimado = int(df.get("valor_estm", pd.Series(dtype="int")).sum())
+    faturamento_estimado = int(df.get("valor_estm", pd.Series(dtype="float")).sum())
     retorno = {
         "total": len(df),
         "leads": por_status.get("Lead", 0),
@@ -134,6 +169,12 @@ def novo_cliente():
         return redirect(url_for("login"))
 
     df = load_clientes()
+    valor_raw = request.form.get("valor_estm")
+    try:
+        valor_estm = float(valor_raw) if valor_raw else 0
+    except ValueError:
+        valor_estm = 0
+        flash("Valor estimado inválido. Usando 0.", "warning")
     novo = {
         "nome": request.form.get("nome", "").strip(),
         "email": request.form.get("email", "").strip(),
@@ -142,7 +183,7 @@ def novo_cliente():
         "status": request.form.get("status", "Lead"),
         "ultima_interacao": request.form.get("ultima_interacao")
         or datetime.today().strftime("%Y-%m-%d"),
-        "valor_estm": request.form.get("valor_estm") or 0,
+        "valor_estm": valor_estm,
     }
     df = pd.concat([df, pd.DataFrame([novo])], ignore_index=True)
     persist_clientes(df)
@@ -162,6 +203,7 @@ def upload_clientes():
         df = pd.read_csv(uploaded)
         if "nome" not in df.columns:
             raise ValueError("CSV deve conter coluna 'nome'.")
+        df = normalize_clientes(df)
         persist_clientes(df)
         flash("Planilha importada com sucesso!", "success")
     except Exception as exc:  # noqa: BLE001
